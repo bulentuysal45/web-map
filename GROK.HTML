@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SAHA Çalışmaları Harita Uygulaması</title>
+    <!-- ArcGIS JavaScript API CSS -->
+    <link rel="stylesheet" href="https://js.arcgis.com/4.27/esri/themes/light/main.css">
+    <style>
+        html, body, #mapDiv {
+            padding: 0;
+            margin: 0;
+            height: 100%;
+            width: 100%;
+        }
+        
+        /* Popup stilleri */
+        .esri-popup__content {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        /* Ölçme widget'ı için ek stil (aktif durum vurgusu) */
+        .esri-measurement .esri-button--active {
+            background-color: #0079c1;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div id="mapDiv"></div>
+    <!-- "Veriler yükleniyor" uyarısını kaldırdık -->
+    
+    <!-- ArcGIS JavaScript API -->
+    <script src="https://js.arcgis.com/4.27/"></script>
+    <script>
+        require([
+            "esri/Map",
+            "esri/views/MapView",
+            "esri/layers/FeatureLayer",
+            "esri/widgets/Home",
+            "esri/widgets/ScaleBar",
+            "esri/geometry/Extent",
+            "esri/core/promiseUtils",
+            "esri/widgets/Search", // Arama için
+            "esri/widgets/LayerList", // Katman listesi için
+            "esri/widgets/BasemapGallery", // Altlık harita değiştirme için
+            "esri/widgets/Measurement", // Ölçme için
+            "esri/widgets/Expand" // Widget'ları genişletmek/küçültmek için
+        ], function(
+            Map, MapView, FeatureLayer, Home, ScaleBar,
+            Extent, promiseUtils, Search, LayerList, BasemapGallery, Measurement, Expand
+        ) {
+            const sahaRenderer = {
+                type: "unique-value",
+                valueExpression: `Upper($feature.DURUM)`,
+                defaultSymbol: {
+                    type: "simple-marker",
+                    size: 10,
+                    color: "gray",
+                    outline: {
+                        width: 0.5,
+                        color: "white"
+                    }
+                },
+                uniqueValueInfos: [
+                    {
+                        value: "TAMAMLANDI",
+                        symbol: {
+                            type: "simple-marker",
+                            size: 10,
+                            color: "green",
+                            outline: {
+                                width: 0.5,
+                                color: "white"
+                            }
+                        }
+                    },
+                    {
+                        value: "PLANLANDI",
+                        symbol: {
+                            type: "simple-marker",
+                            size: 10,
+                            color: "red",
+                            outline: {
+                                width: 0.5,
+                                color: "white"
+                            }
+                        }
+                    }
+                ]
+            };
+
+            const url = "https://esri.uedas.com.tr/server/rest/services/SAHA_CALISMALARI/FeatureServer/0";
+
+            function getLayerFields(url) {
+                return fetch(`${url}?f=json`)
+                    .then(response => response.json())
+                    .then(layerInfo => {
+                        if (layerInfo && layerInfo.fields) {
+                            return layerInfo.fields;
+                        } else {
+                            return [];
+                        }
+                    })
+                    .catch(error => {
+                        console.error("Katman bilgileri alınırken hata oluştu:", error);
+                        return [];
+                    });
+            }
+
+            getLayerFields(url).then(fields => {
+                const sahaLayer = new FeatureLayer({
+                    url: url,
+                    outFields: ["*"],
+                    renderer: sahaRenderer,
+                    popupTemplate: {
+                        title: "SAHA Çalışması Detayları",
+                        content: function(feature) {
+                            let content = "<table border='1' style='border-collapse: collapse; width: 100%;'>";
+                            const attributes = feature.graphic.attributes;
+                            for (let key in attributes) {
+                                content += `<tr><td style='padding: 5px;'><b>${key}</b></td><td style='padding: 5px;'>${attributes[key] || "Boş"}</td></tr>`;
+                            }
+                            content += "</table>";
+                            return content;
+                        }
+                    }
+                });
+
+                const map = new Map({
+                    basemap: "streets-vector",
+                    layers: [sahaLayer]
+                });
+
+                const view = new MapView({
+                    container: "mapDiv",
+                    map: map,
+                    zoom: 6,
+                    center: [35.00, 39.00],
+                    constraints: {
+                        minZoom: 6,
+                        maxZoom: 19
+                    },
+                    popup: {
+                        dockEnabled: true,
+                        dockOptions: {
+                            position: "auto",
+                            breakpoint: false
+                        }
+                    }
+                });
+
+                let homeExtent = null;
+
+                function centerMapOnFeatures() {
+                    // loadingIndicator kaldırıldığı için bu manipülasyonlar olmayacak
+                    const query = sahaLayer.createQuery();
+                    query.returnGeometry = true;
+                    query.outFields = ["*"];
+                    query.num = 1000;
+
+                    sahaLayer.queryFeatures(query)
+                        .then(function(results) {
+                            if (results.features.length > 0) {
+                                let minX = Infinity, minY = Infinity;
+                                let maxX = -Infinity, maxY = -Infinity;
+
+                                results.features.forEach(function(feature) {
+                                    const geometry = feature.geometry;
+                                    if (geometry) {
+                                        const x = geometry.x;
+                                        const y = geometry.y;
+
+                                        minX = Math.min(minX, x);
+                                        minY = Math.min(minY, y);
+                                        maxX = Math.max(maxX, x);
+                                        maxY = Math.max(maxY, y);
+                                    }
+                                });
+
+                                if (minX !== Infinity && minY !== Infinity && maxX !== -Infinity && maxY !== -Infinity) {
+                                    const paddingFactor = 0.1;
+                                    const xPadding = (maxX - minX) * paddingFactor;
+                                    const yPadding = (maxY - minY) * paddingFactor;
+
+                                    const dataExtent = new Extent({
+                                        xmin: minX - xPadding,
+                                        ymin: minY - yPadding,
+                                        xmax: maxX + xPadding,
+                                        ymax: maxY + yPadding,
+                                        spatialReference: results.features[0].geometry.spatialReference
+                                    });
+
+                                    homeExtent = dataExtent;
+
+                                    view.goTo(dataExtent);
+                                }
+                            }
+                        })
+                        .catch(function(error) {
+                            console.error("Veriler yüklenirken hata oluştu: ", error);
+                            alert("Veriler yüklenirken bir sorun oluştu. Varsayılan görünümü kullanıyoruz.");
+                        });
+                }
+
+                view.when(function() {
+                    centerMapOnFeatures();
+
+                    // Home widget (Varsayılan ekran dönüş)
+                    const homeWidget = new Home({
+                        view: view
+                    });
+                    view.ui.add(homeWidget, "top-left");
+
+                    homeWidget.when(function() {
+                        homeWidget.viewpoint = null;
+                        const originalGoTo = homeWidget.go;
+                        homeWidget.go = function() {
+                            if (homeExtent) {
+                                return view.goTo(homeExtent);
+                            } else {
+                                return originalGoTo.call(homeWidget);
+                            }
+                        };
+                    });
+
+                    // Arama widget'ı
+                    const searchWidget = new Search({
+                        view: view,
+                        container: document.createElement("div") // Expand ile kullanılacak
+                    });
+
+                    const searchExpand = new Expand({
+                        view: view,
+                        content: searchWidget.domNode,
+                        expandIconClass: "esri-icon-search",
+                        group: "top-right"
+                    });
+                    view.ui.add(searchExpand, "top-right");
+
+                    // Katman listesi widget'ı
+                    const layerList = new LayerList({
+                        view: view,
+                        container: document.createElement("div")
+                    });
+
+                    const layerListExpand = new Expand({
+                        view: view,
+                        content: layerList.domNode,
+                        expandIconClass: "esri-icon-layers",
+                        group: "top-right"
+                    });
+                    view.ui.add(layerListExpand, "top-right");
+
+                    // Basemap Gallery (Altlık harita değiştirme)
+                    const basemapGallery = new BasemapGallery({
+                        view: view,
+                        container: document.createElement("div")
+                    });
+
+                    const basemapExpand = new Expand({
+                        view: view,
+                        content: basemapGallery.domNode,
+                        expandIconClass: "esri-icon-basemap",
+                        group: "top-right"
+                    });
+                    view.ui.add(basemapExpand, "top-right");
+
+                    // Ölçme widget'ı (Measurement)
+                    const measurement = new Measurement({
+                        view: view,
+                        container: document.createElement("div")
+                    });
+
+                    const measurementExpand = new Expand({
+                        view: view,
+                        content: measurement.domNode,
+                        expandIconClass: "esri-icon-measure",
+                        group: "top-right"
+                    });
+                    view.ui.add(measurementExpand, "top-right");
+
+                    // Ölçek çubuğu
+                    const scaleBar = new ScaleBar({
+                        view: view,
+                        unit: "metric"
+                    });
+                    view.ui.add(scaleBar, "bottom-right");
+                });
+            }).catch(error => {
+                console.error("Hata oluştu:", error);
+                alert("Uygulama yüklenirken bir hata oluştu. Lütfen sayfayı yenileyin.");
+            });
+        });
+    </script>
+</body>
+</html>
